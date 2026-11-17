@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Carnet">
+<meta name="theme-color" content="#140b0d">
+<meta name="robots" content="noindex, nofollow">
+<title>Carnet</title>
+<style>
+:root{--bg:#140b0d;--card:#1f1215;--accent:#b8322a;--gold:#d4a373;--txt:#f3e9e4;--muted:#a8918b;--line:#3a2226}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:Georgia,serif;min-height:100vh;display:flex;justify-content:center;line-height:1.55}
+main{width:100%;max-width:520px;padding:calc(24px + env(safe-area-inset-top)) 18px calc(60px + env(safe-area-inset-bottom))}
+h1{font-weight:normal;text-align:center;letter-spacing:.15em;color:var(--gold);font-size:1.3em;margin:10px 0 28px}
+.box{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:16px}
+.box.hl{border-color:var(--gold)}
+label{display:block;color:var(--muted);font-size:.8em;margin:14px 0 6px;font-family:sans-serif;text-transform:uppercase;letter-spacing:.08em}
+input,textarea{width:100%;background:#0e0708;color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:12px;font-size:1em}
+textarea{min-height:110px;font-family:monospace;font-size:.75em}
+button{font-family:sans-serif;font-size:.95em;border:none;border-radius:10px;padding:12px 10px;cursor:pointer;background:#2c191c;color:var(--txt);margin-top:10px}
+button.main{background:var(--accent);width:100%;font-weight:bold;letter-spacing:.05em;padding:15px}
+button.sec{width:100%;border:1px solid var(--gold);background:none;color:var(--gold)}
+button.sel{background:var(--gold);color:#140b0d}
+button.link{background:none;color:var(--muted);text-decoration:underline;padding:6px 0;font-size:.85em;display:block}
+.row{display:flex;gap:8px}.row button{flex:1}
+.small{font-size:.75em;opacity:.8}
+.muted{color:var(--muted);font-size:.85em;font-family:sans-serif}
+.meta{color:var(--muted);font-family:sans-serif;font-size:.85em}
+.step{animation:fade .7s}
+.step h3{color:var(--gold);font-weight:normal;margin:4px 0 8px}
+.dom{font-family:sans-serif;font-size:.75em;color:var(--accent);text-transform:uppercase;letter-spacing:.12em}
+.adapt{border-left:3px solid var(--gold);padding:8px 12px;margin-top:8px;font-style:italic;color:#e6d3c4}
+.hidden{display:none}
+.err{color:#ff7b6b;font-family:sans-serif;font-size:.9em;margin-top:10px;min-height:1em}
+.debt{display:flex;justify-content:space-between;align-items:center;font-family:sans-serif;margin:6px 0}
+.debt button{margin:0 6px;width:42px;padding:8px 0}
+.debt b{display:inline-block;min-width:22px;text-align:center;color:var(--gold);font-size:1.1em}
+.banner{font-family:sans-serif;font-size:.8em;color:var(--gold);text-align:center;margin:-16px 0 18px}
+@keyframes fade{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+</style>
+</head>
+<body><main id="app"></main>
+<script>
+/* Coquille vide : aucune carte ni aucun prénom ici. Tout vient du bloc collé, chiffré sur l'appareil. */
+const app=document.getElementById('app'),$=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
+const K={vault:'nc_vault',played:'nc_played',res:'nc_reserved',debt:'nc_debts',prog:'nc_progress'};
+const TYPES=[['simple','🛏️ Simple'],['soiree','🍷 Soirée'],['journee','☀️ Journée']];
+const TLABEL=Object.fromEntries(TYPES);
+const LOCK_AFTER=10*60*1000;
+let data=null,pass='',state={type:null,dom:'H'},cur=null,ctx=null,stepIdx=0,hiddenAt=0;
+const enc=new TextEncoder(),dec=new TextDecoder();
+
+function b64(buf){let s='';const b=new Uint8Array(buf);for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s);}
+function unb64(s){const bin=atob(s),b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b;}
+async function deriveKey(p,salt){const k=await crypto.subtle.importKey('raw',enc.encode(p),'PBKDF2',false,['deriveKey']);
+ return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:200000,hash:'SHA-256'},k,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);}
+async function saveVault(){const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));
+ const k=await deriveKey(pass,salt);const d=await crypto.subtle.encrypt({name:'AES-GCM',iv},k,enc.encode(JSON.stringify(data)));
+ localStorage.setItem(K.vault,JSON.stringify({s:b64(salt),i:b64(iv),d:b64(d)}));}
+async function openVault(p){const v=JSON.parse(localStorage.getItem(K.vault));const k=await deriveKey(p,unb64(v.s));
+ const d=await crypto.subtle.decrypt({name:'AES-GCM',iv:unb64(v.i)},k,unb64(v.d));return JSON.parse(dec.decode(d));}
+
+const get=(k,def)=>{try{const v=JSON.parse(localStorage.getItem(k));return v??def;}catch(e){return def;}};
+const put=(k,v)=>localStorage.setItem(k,JSON.stringify(v));
+const del=k=>localStorage.removeItem(k);
+const played=()=>get(K.played,[]);
+const reserved=()=>get(K.res,null);
+const progress=()=>get(K.prog,null);
+const debts=()=>{const d=get(K.debt,null);return Array.isArray(d)&&d.length===2?d:[0,0];};
+const noms=()=>data.noms;
+const cards=()=>data.cartes;
+const find=id=>cards().find(c=>c.id===id);
+const domLabel=d=>d==='H'?'Hasard':noms()[d];
+const esc=t=>String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const fmt=t=>esc(t).replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/\n/g,'<br>');
+const err=m=>{const e=$('#err');if(e){e.style.color='';e.textContent=m;}};
+const rand=a=>a[Math.floor(Math.random()*a.length)];
+
+function parseBlock(txt){
+ let o;try{o=JSON.parse(txt);}catch(e){throw new Error('le texte collé n\'est pas lisible (copie incomplète ?).');}
+ let n=null,c;
+ if(Array.isArray(o))c=o;
+ else if(o&&Array.isArray(o.cartes)){c=o.cartes;n=o.noms??null;}
+ else throw new Error('aucune liste de cartes trouvée.');
+ if(n!==null&&(!Array.isArray(n)||n.length!==2||n.some(x=>typeof x!=='string'||!x.trim())))throw new Error('il faut exactement deux prénoms dans « noms ».');
+ c.forEach((k,i)=>{if(!k||!k.id||!TLABEL[k.type]||!k.titre||!Array.isArray(k.etapes)||!k.etapes.length)throw new Error('la carte n°'+(i+1)+' est incomplète.');});
+ return {noms:n,cartes:c};
+}
+
+function poolFor(type,dom,excludeId){
+ const pl=played(),r=reserved(),pr=progress();
+ return cards().filter(c=>c.type===type&&!pl.includes(c.id)&&c.id!==excludeId
+  &&!(r&&r.id===c.id)&&!(pr&&pr.id===c.id)
+  &&(dom==='H'||c.domine===noms()[dom]||c.domine==='Les deux'));
+}
+
+function debtRows(){const d=debts();
+ return noms().map((n,i)=>`<div class="debt"><span>${esc(n)} doit</span><span><button data-m="${i}">−</button><b>${d[i]}</b><button data-p="${i}">+</button></span></div>`).join('');}
+function bindDebts(re){
+ $$('[data-p]').forEach(b=>b.onclick=()=>{const d=debts();d[+b.dataset.p]++;put(K.debt,d);re();});
+ $$('[data-m]').forEach(b=>b.onclick=()=>{const d=debts(),i=+b.dataset.m;d[i]=Math.max(0,d[i]-1);put(K.debt,d);re();});
+}
+
+function start(){
+ if(!window.crypto||!crypto.subtle){app.innerHTML='<h1>CARNET</h1><div class="box err">Ce navigateur bloque le chiffrement. La page doit être ouverte en https dans Safari, Chrome ou Firefox récents.</div>';return;}
+ if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(()=>{});
+ localStorage.getItem(K.vault)?lockScreen():setupScreen();
+}
+document.addEventListener('visibilitychange',()=>{
+ if(document.hidden)hiddenAt=Date.now();
+ else if(data&&hiddenAt&&Date.now()-hiddenAt>LOCK_AFTER)lock();
+});
+function lock(){data=null;pass='';cur=null;lockScreen();}
+
+function setupScreen(){
+ app.innerHTML=`<h1>CARNET</h1><div class="box">
+ <p class="muted" style="margin-top:0">Colle le bloc complet (prénoms + cartes). Il sera chiffré sur cet appareil avec votre phrase secrète. Garde une copie du bloc en lieu sûr : phrase oubliée ou données effacées = tout est perdu.</p>
+ <textarea id="json" placeholder="Coller le bloc ici"></textarea>
+ <label>Phrase secrète</label><input id="p1" type="password" autocomplete="off">
+ <label>Confirmer</label><input id="p2" type="password" autocomplete="off">
+ <button class="main" id="go">Chiffrer et commencer</button><div id="err" class="err"></div></div>`;
+ $('#go').onclick=async()=>{
+  const p1=$('#p1').value,p2=$('#p2').value;let b;
+  try{b=parseBlock($('#json').value);}catch(e){return err('Bloc invalide : '+e.message);}
+  if(!b.noms)return err('Bloc invalide : il manque les prénoms (« noms »).');
+  if(p1.length<8)return err('Phrase secrète trop courte (8 caractères minimum).');
+  if(p1!==p2)return err('Les deux phrases ne correspondent pas.');
+  data=b;pass=p1;await saveVault();put(K.played,[]);put(K.debt,[0,0]);del(K.res);del(K.prog);home();
+ };
+}
+
+function lockScreen(){
+ app.innerHTML=`<h1>CARNET</h1><div class="box">
+ <label style="margin-top:0">Phrase secrète</label><input id="p" type="password" autocomplete="off">
+ <button class="main" id="go">Ouvrir</button><div id="err" class="err"></div>
+ <button class="link" id="reset">Tout effacer et recommencer</button></div>`;
+ const go=async()=>{const p=$('#p').value;try{data=await openVault(p);pass=p;home();}catch(e){err('Phrase incorrecte.');}};
+ $('#go').onclick=go;$('#p').onkeydown=e=>{if(e.key==='Enter')go();};
+ $('#reset').onclick=()=>{if(confirm('Effacer définitivement les cartes, l\'ardoise et l\'historique de cet appareil ?')){Object.values(K).forEach(del);setupScreen();}};
+}
+
+function home(){
+ const r=reserved(),rc=r&&find(r.id),pr=progress(),pc=pr&&find(pr.id);
+ if(r&&!rc)del(K.res);if(pr&&!pc)del(K.prog);
+ const n=t=>poolFor(t,'H').length;
+ let h=`<h1>NOS CARTES</h1>`;
+ if(pc)h+=`<div class="box hl"><p style="margin:0;text-align:center">Carte en cours : <b>${esc(pc.titre)}</b> (étape ${pr.step+1})</p>
+  <button class="main" id="resume">Reprendre</button><button class="link" id="drop">La remettre dans la pile</button></div>`;
+ if(rc)h+=`<div class="box hl"><p style="margin:0;text-align:center">Une carte <b>${TLABEL[rc.type]}</b> vous attend.</p>
+  <button class="main" id="openRes">L'ouvrir</button><button class="link" id="cancelRes">Annuler la réservation</button></div>`;
+ h+=`<div class="box">
+ <label style="margin-top:0">Moment</label><div class="row">${TYPES.map(([k,l])=>`<button data-t="${k}" class="${state.type===k?'sel':''}">${l}<br><span class="small">${n(k)} dispo</span></button>`).join('')}</div>
+ <label>Qui domine</label><div class="row">${[0,1,'H'].map(d=>`<button data-d="${d}" class="${state.dom===d?'sel':''}">${esc(domLabel(d))}</button>`).join('')}</div>
+ <button class="main" id="draw">Tirer une carte</button>
+ <button class="sec" id="reserve">Tirer à l'avance (sans la révéler)</button><div id="err" class="err"></div></div>
+ <div class="box"><label style="margin-top:0">Ardoise des dettes</label>${debtRows()}</div>
+ <div class="box"><button class="link" id="add">Ajouter des cartes</button><button class="link" id="backup">Sauvegarder le bloc</button><button class="link" id="replay">Remettre toutes les cartes en jeu</button><button class="link" id="lock">Verrouiller</button></div>`;
+ app.innerHTML=h;
+ $$('[data-t]').forEach(b=>b.onclick=()=>{state.type=b.dataset.t;home();});
+ $$('[data-d]').forEach(b=>b.onclick=()=>{const v=b.dataset.d;state.dom=v==='H'?'H':+v;home();});
+ bindDebts(home);
+ $('#draw').onclick=()=>draw(false);
+ $('#reserve').onclick=()=>draw(true);
+ if(pc){
+  $('#resume').onclick=()=>{cur=pc;ctx={type:pr.type,dom:pr.dom};stepIdx=Math.min(pr.step,pc.etapes.length-1);cardScreen();};
+  $('#drop').onclick=()=>{if(confirm('Remettre cette carte dans la pile ?')){del(K.prog);home();}};
+ }
+ if(rc){
+  $('#openRes').onclick=()=>{del(K.res);cur=rc;ctx={type:rc.type,dom:r.dom};stepIdx=0;cardScreen();};
+  $('#cancelRes').onclick=()=>{if(confirm('Remettre cette carte dans la pile sans la révéler ?')){del(K.res);home();}};
+ }
+ $('#add').onclick=addScreen;
+ $('#backup').onclick=backupScreen;
+ $('#replay').onclick=()=>{if(confirm('Remettre toutes les cartes jouées dans le jeu ?')){put(K.played,[]);home();}};
+ $('#lock').onclick=lock;
+}
+
+function draw(reserve){
+ if(!state.type)return err('Choisis un moment.');
+ if(reserve&&reserved())return err('Une carte est déjà réservée.');
+ const p=poolFor(state.type,state.dom);
+ if(!p.length)return err('Aucune carte disponible pour ce choix. Essaie « Hasard » ou un autre moment.');
+ const c=rand(p);
+ if(reserve){put(K.res,{id:c.id,dom:state.dom});home();return;}
+ cur=c;ctx={type:state.type,dom:state.dom};stepIdx=0;cardScreen();
+}
+
+function cardScreen(){
+ const c=cur,d=debts(),owed=noms().map((n,i)=>d[i]>0?`${esc(n)} : ${d[i]}`:'').filter(Boolean).join(' · ');
+ put(K.prog,{id:c.id,step:stepIdx,type:ctx.type,dom:ctx.dom});
+ let h=`<h1>${esc(c.titre).toUpperCase()}</h1>${owed?`<div class="banner">Dettes en cours — ${owed}</div>`:''}
+ <div class="box meta">${TLABEL[c.type]} · Arc : ${esc(c.arc||'')} · Durée : ${esc(c.duree||'')}<br>Matériel : ${esc(c.materiel||'—')}</div>`;
+ for(let i=0;i<=stepIdx;i++){const s=c.etapes[i];
+  h+=`<div class="box step"><div class="dom">${esc(s.dom||'')}</div><h3>Étape ${i+1} – ${esc(s.titre||'')}</h3><div>${fmt(s.texte||'')}</div>
+  ${s.adapter?`<button class="link" data-a="${i}">Adapter</button><div class="adapt hidden" id="a${i}">${fmt(s.adapter)}</div>`:''}</div>`;}
+ h+=stepIdx<c.etapes.length-1?`<button class="main" id="next">Étape suivante</button>`:`<button class="main" id="done">Carte terminée</button>`;
+ if(stepIdx===0)h+=`<button class="sec" id="change">Changer de carte</button>`;
+ h+=`<button class="link" id="later">Ne pas jouer maintenant</button><div id="err" class="err"></div>`;
+ app.innerHTML=h;
+ $$('[data-a]').forEach(b=>b.onclick=()=>document.getElementById('a'+b.dataset.a).classList.toggle('hidden'));
+ if($('#next'))$('#next').onclick=()=>{stepIdx++;cardScreen();window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});};
+ if($('#done'))$('#done').onclick=()=>{put(K.played,[...played(),c.id]);del(K.prog);cur=null;debtScreen();};
+ if($('#change'))$('#change').onclick=()=>{
+  const p=poolFor(ctx.type,ctx.dom,c.id);
+  if(!p.length)return err('Pas d\'autre carte disponible pour ce choix.');
+  cur=rand(p);stepIdx=0;cardScreen();window.scrollTo(0,0);
+ };
+ $('#later').onclick=()=>{del(K.prog);cur=null;home();};
+}
+
+function debtScreen(){
+ app.innerHTML=`<h1>ARDOISE</h1><div class="box"><p class="muted" style="margin-top:0">Des dettes à noter à la suite de cette carte ? Ou des dettes réglées à effacer ?</p>${debtRows()}
+ <button class="main" id="ok">Valider</button></div>`;
+ bindDebts(debtScreen);$('#ok').onclick=home;
+}
+
+function addScreen(){
+ app.innerHTML=`<h1>AJOUTER DES CARTES</h1><div class="box">
+ <p class="muted" style="margin-top:0">Une carte qui porte le même id qu'une carte existante la remplace.</p>
+ <textarea id="json" placeholder="Coller le bloc de cartes ici"></textarea>
+ <button class="main" id="go">Ajouter et chiffrer</button><div id="err" class="err"></div>
+ <button class="link" id="back">Retour</button></div>`;
+ $('#back').onclick=home;
+ $('#go').onclick=async()=>{let b;try{b=parseBlock($('#json').value);}catch(e){return err('Bloc invalide : '+e.message);}
+  let added=0,upd=0;
+  b.cartes.forEach(c=>{const i=cards().findIndex(x=>x.id===c.id);if(i<0){cards().push(c);added++;}else{cards()[i]=c;upd++;}});
+  await saveVault();alert(added+' carte(s) ajoutée(s), '+upd+' mise(s) à jour.');home();};
+}
+
+function backupScreen(){
+ const txt=JSON.stringify(data,null,1);
+ app.innerHTML=`<h1>SAUVEGARDE</h1><div class="box">
+ <p class="muted" style="margin-top:0">Voici le bloc complet, en clair. Range-le dans un endroit protégé (note verrouillée, gestionnaire de mots de passe). Il permet de tout restaurer.</p>
+ <textarea id="out" readonly>${esc(txt)}</textarea>
+ <button class="main" id="copy">Copier</button><div id="err" class="err"></div>
+ <button class="link" id="back">Retour</button></div>`;
+ $('#copy').onclick=async()=>{try{await navigator.clipboard.writeText(txt);const e=$('#err');e.style.color='var(--gold)';e.textContent='Copié.';}
+  catch(e){const t=$('#out');t.focus();t.select();err('Copie automatique impossible : sélectionne le texte et copie-le à la main.');}};
+ $('#back').onclick=home;
+}
+
+start();
+</script>
+</body>
+</html>
